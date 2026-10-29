@@ -1,0 +1,12 @@
+---
+title: "NYT API"
+author: "Johnny Maldonado"
+format: html
+editor: visual
+---
+
+## Introduction
+
+My research question is: How has The New York Times portrayed the benefits and challenges of artificial intelligence in improving everyday human life between 2022 and 2026? I want to explore how AI is being discussed in relation to quality of life, particularly in areas such as healthcare, accessibility, education, and personal independence. My goal is to understand how these developments are presented, including their potential benefits and the concerns surrounding their adoption.
+
+To investigate this question, I plan to use the New York Times Article Search API to collect relevant articles published during this period. Using R, I will retrieve and organize the data, examine headlines, publication dates, abstracts, and available article categories, and identify recurring themes in the coverage. I hope to determine which aspects of AI's impact on everyday life receive the most attention and whether the discussion of its benefits and challenges has changed over time.
