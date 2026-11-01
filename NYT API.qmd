@@ -10,3 +10,241 @@ editor: visual
 My research question is: How has The New York Times portrayed the benefits and challenges of artificial intelligence in improving everyday human life between 2022 and 2026? I want to explore how AI is being discussed in relation to quality of life, particularly in areas such as healthcare, accessibility, education, and personal independence. My goal is to understand how these developments are presented, including their potential benefits and the concerns surrounding their adoption.
 
 To investigate this question, I plan to use the New York Times Article Search API to collect relevant articles published during this period. Using R, I will retrieve and organize the data, examine headlines, publication dates, abstracts, and available article categories, and identify recurring themes in the coverage. I hope to determine which aspects of AI's impact on everyday life receive the most attention and whether the discussion of its benefits and challenges has changed over time.
+
+## Articles
+
+These are starting points for the question, not a substitute for the articles retrieved by the API:
+
+Pam Belluck (2023), “A Stroke Stole Her Ability to Speak at 30. A.I. Is Helping to Restore It Years Later”, The New York Times. This provides an example of AI-assisted communication.
+
+Kashmir Hill (2023), “OpenAI Worries About What Its Chatbot Will Say About People’s Faces”, The New York Times. This raises both accessibility and privacy questions.
+
+OECD (2025), “How do people experience new technologies and generative AI?”. This provides an independent perspective on technology and well-being.
+
+Max Tegmark's Life 3.0 offers additional context about the opportunities and risks of living with increasingly capable AI. It is not the only framework used in this study.
+
+## API Selection
+
+API: New York Times Article Search API, version 2. Endpoint: https://api.nytimes.com/svc/search/v2/articlesearch.json
+
+The endpoint searches New York Times article metadata and returns JSON. I use the search phrase "artificial intelligence", filter for The New York Times as the article source, restrict the publication dates to each year from 2022 through October 31, 2026, and request results sorted by relevance. I retrieve up to two pages of ten results per year, providing a manageable exploratory sample rather than a complete inventory of all NYT coverage. Searching each year separately avoids allowing a single year's articles to dominate the sample.
+
+## Retrieve and Parse JSON in R
+
+```{r}
+#| label: setup
+library(httr)
+library(jsonlite)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+
+api_key <- Sys.getenv("NYT_API_KEY")
+if (!nzchar(api_key)) {
+  stop("NYT_API_KEY is missing. Add it to your private .Renviron and restart R.")
+}
+
+endpoint <- "https://api.nytimes.com/svc/search/v2/articlesearch.json"
+search_phrase <- '"artificial intelligence"'
+years <- 2022:2026
+pages_per_year <- 2L
+```
+
+The following function requests one result page and parses the JSON response into an R list. Error messages deliberately avoid showing the request URL, which contains the key as a query parameter.
+
+```{r}
+#| label: api-request
+request_page <- function(year, page) {
+  end_date <- if (year == 2026L) "20261031" else sprintf("%d1231", year)
+
+  response <- httr::GET(
+    endpoint,
+    query = list(
+      q = search_phrase,
+      begin_date = sprintf("%d0101", year),
+      end_date = end_date,
+      sort = "relevance",
+      fq = 'source:("The New York Times")',
+      page = page,
+      "api-key" = api_key
+    ),
+    httr::timeout(30)
+  )
+
+  status <- httr::status_code(response)
+  if (status == 401L || status == 403L) {
+    stop("The NYT API rejected the request. Check your key and API access.")
+  }
+  if (status == 429L) {
+    stop("The NYT API rate limit was reached. Retry later or reduce requests.")
+  }
+  if (status != 200L) {
+    stop(sprintf("NYT API returned HTTP status %d.", status))
+  }
+
+  parsed <- jsonlite::fromJSON(
+    httr::content(response, as = "text", encoding = "UTF-8"),
+    simplifyVector = FALSE
+  )
+  if (is.null(parsed$response$docs)) return(list())
+  parsed$response$docs
+}
+
+# Collect up to 20 results per year, respecting the API's request limits.
+raw_documents <- list()
+request_count <- 0L
+
+for (year in years) {
+  for (page in seq_len(pages_per_year) - 1L) {
+    if (request_count > 0L) Sys.sleep(7)
+    docs <- request_page(year, page)
+    request_count <- request_count + 1L
+    raw_documents <- c(raw_documents, docs)
+
+    # A short page means there is no need to request another page.
+    if (length(docs) < 10L) break
+  }
+}
+
+if (length(raw_documents) == 0L) {
+  stop("No articles were returned. Review the search term and API settings.")
+}
+```
+
+## Transform the results
+
+I extract the fields needed for analysis and replace unavailable text with NA rather than inventing values.
+
+```{r}
+#| label: tidy-data
+safe_text <- function(value) {
+  if (is.null(value) || length(value) == 0L) return(NA_character_)
+  if (is.list(value)) return(NA_character_)
+  as.character(value[[1L]])
+}
+
+safe_nested <- function(article, field, subfield) {
+  parent <- article[[field]]
+  if (is.null(parent) || !is.list(parent)) return(NA_character_)
+  safe_text(parent[[subfield]])
+}
+
+article_rows <- lapply(raw_documents, function(article) {
+  data.frame(
+    id = safe_text(article[["_id"]]),
+    headline = safe_nested(article, "headline", "main"),
+    abstract = safe_text(article[["abstract"]]),
+    snippet = safe_text(article[["snippet"]]),
+    publication_date = safe_text(article[["pub_date"]]),
+    section = safe_text(article[["section_name"]]),
+    url = safe_text(article[["web_url"]]),
+    stringsAsFactors = FALSE
+  )
+})
+
+articles <- dplyr::bind_rows(article_rows) |>
+  dplyr::mutate(
+    publication_date = as.Date(substr(publication_date, 1, 10)),
+    year = as.integer(format(publication_date, "%Y")),
+    section = ifelse(is.na(section) | !nzchar(section),
+                     "Not specified", section)
+  ) |>
+  dplyr::distinct(url, .keep_all = TRUE) |>
+  dplyr::arrange(year, publication_date)
+
+knitr::kable(
+  head(dplyr::select(articles, year, headline, section, url), 12),
+  caption = "First 12 unique retrieved articles"
+)
+```
+
+## Exploratory Analysis
+
+First, I examine the number of articles retrieved for each year and their sections. These are sample counts, not the total number of NYT articles published in each year.
+
+```{r}
+#| label: yearly-counts
+yearly_counts <- articles |>
+  dplyr::count(year, name = "articles_in_sample")
+knitr::kable(yearly_counts, caption = "Retrieved articles by publication year")
+
+section_counts <- articles |>
+  dplyr::count(section, sort = TRUE, name = "articles_in_sample")
+knitr::kable(head(section_counts, 10), caption = "Ten most frequent sections in the sample")
+```
+
+```{r}
+#| label: publication-chart
+ggplot(yearly_counts, aes(x = factor(year), y = articles_in_sample)) +
+  geom_col(fill = "steelblue") +
+  labs(
+    title = "NYT articles retrieved about artificial intelligence",
+    subtitle = "Up to 20 relevance-ranked results per year; not total publication volume",
+    x = "Publication year",
+    y = "Articles in the sample"
+  ) +
+  theme_minimal()
+```
+
+I then use a simple, transparent keyword screen on the available headline, abstract, and snippet fields. This provides leads for further reading, rather than treating keyword matches as proof of an article's position or of AI's actual effects.
+
+```{r}
+#| label: theme-screen
+fill_missing <- function(x) ifelse(is.na(x), "", x)
+
+articles <- articles |>
+  dplyr::mutate(
+    searchable_text = tolower(paste(
+      fill_missing(headline), fill_missing(abstract), fill_missing(snippet)
+    )),
+    possible_topic = dplyr::case_when(
+      grepl("health|hospital|doctor|patient|medic|diagnos|treatment", searchable_text) ~ "Healthcare",
+      grepl("accessib|disab|blind|deaf|paraly|assistive|speech", searchable_text) ~ "Accessibility",
+      grepl("educat|school|student|teacher|learn|classroom", searchable_text) ~ "Education",
+      grepl("work|job|employ|productiv|office|career", searchable_text) ~ "Work and productivity",
+      TRUE ~ "Other or unclear"
+    ),
+    benefit_word = grepl("help|improv|assist|benefit|restor|support|enable|advance", searchable_text),
+    challenge_word = grepl("risk|concern|harm|bias|privacy|danger|threat|error|misus|replace", searchable_text),
+    wording_signal = dplyr::case_when(
+      benefit_word & challenge_word ~ "Both kinds of wording",
+      benefit_word ~ "Benefit-related wording only",
+      challenge_word ~ "Challenge-related wording only",
+      TRUE ~ "Neither kind identified"
+    )
+  )
+
+knitr::kable(
+  articles |>
+    dplyr::count(possible_topic, sort = TRUE, name = "articles") ,
+  caption = "Exploratory topic screen (one preliminary category per article)"
+)
+
+knitr::kable(
+  articles |>
+    dplyr::count(wording_signal, sort = TRUE, name = "articles"),
+  caption = "Preliminary benefit/challenge keyword signals"
+)
+```
+
+Finally, I inspect some candidate articles about quality of life. I would read these articles before making any claims about how they portray AI; headlines and snippets alone cannot establish a complete argument.
+
+```{r}
+#| label: article-review
+review_candidates <- articles |>
+  dplyr::filter(possible_topic != "Other or unclear") |>
+  dplyr::select(year, headline, possible_topic, wording_signal, url) |>
+  dplyr::arrange(year, headline)
+
+knitr::kable(
+  head(review_candidates, 15),
+  caption = "Articles to review for a qualitative interpretation"
+)
+
+```
+
+## Decision
+
+I flattened the nested headline field, converted publication timestamps into dates, and removed repeated article URLs so the same article would not be counted twice. I kept missing abstracts or snippets as missing values and replaced missing section labels with “Not specified.” I retained links to the articles to make it possible to check the interpretations against the original reporting.
+
+This is an exploratory, relevance-ranked sample of up to 20 results per year, not a complete or random sample. The search phrase also misses articles that discuss AI without using the words “artificial intelligence.” The 2026 period ends on October 31, so it is not a complete calendar year. Section and keyword counts show what appears in the retrieved metadata; they do not measure public opinion, the benefits of AI, or the full tone of an article. The keyword categories are preliminary, may overlap conceptually, and need manual review. Any conclusions about whether the NYT coverage changed over time should therefore be limited to this sample.
