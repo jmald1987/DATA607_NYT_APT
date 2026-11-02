@@ -47,24 +47,25 @@ if (!nzchar(api_key)) {
 endpoint <- "https://api.nytimes.com/svc/search/v2/articlesearch.json"
 search_phrase <- '"artificial intelligence"'
 years <- 2022:2026
-pages_per_year <- 2L
+pages_per_year <- 1L
 ```
 
 The following function requests one result page and parses the JSON response into an R list. Error messages deliberately avoid showing the request URL, which contains the key as a query parameter.
 
 ```{r}
+
 #| label: api-request
+
 request_page <- function(year, page) {
   end_date <- if (year == 2026L) "20261031" else sprintf("%d1231", year)
 
   response <- httr::GET(
     endpoint,
     query = list(
-      q = search_phrase,
+      q = "artificial intelligence",
       begin_date = sprintf("%d0101", year),
       end_date = end_date,
       sort = "relevance",
-      fq = 'source:("The New York Times")',
       page = page,
       "api-key" = api_key
     ),
@@ -72,43 +73,54 @@ request_page <- function(year, page) {
   )
 
   status <- httr::status_code(response)
-  if (status == 401L || status == 403L) {
-    stop("The NYT API rejected the request. Check your key and API access.")
-  }
-  if (status == 429L) {
-    stop("The NYT API rate limit was reached. Retry later or reduce requests.")
-  }
+
   if (status != 200L) {
-    stop(sprintf("NYT API returned HTTP status %d.", status))
+    stop(sprintf("NYT API returned HTTP %d.", status))
   }
 
   parsed <- jsonlite::fromJSON(
     httr::content(response, as = "text", encoding = "UTF-8"),
     simplifyVector = FALSE
   )
-  if (is.null(parsed$response$docs)) return(list())
-  parsed$response$docs
+
+  docs <- parsed$response$docs
+
+  if (is.null(docs)) docs <- list()
+
+  message(sprintf(
+    "Year %d, page %d: %d articles returned",
+    year, page, length(docs)
+  ))
+
+  docs
 }
 
-# Collect up to 20 results per year, respecting the API's request limits.
 raw_documents <- list()
 request_count <- 0L
 
 for (year in years) {
-  for (page in seq_len(pages_per_year) - 1L) {
-    if (request_count > 0L) Sys.sleep(7)
+  for (page in 0:(pages_per_year - 1L)) {
+
+    if (request_count > 0L) Sys.sleep(15)
+
     docs <- request_page(year, page)
     request_count <- request_count + 1L
+
     raw_documents <- c(raw_documents, docs)
 
-    # A short page means there is no need to request another page.
     if (length(docs) < 10L) break
   }
 }
 
 if (length(raw_documents) == 0L) {
-  stop("No articles were returned. Review the search term and API settings.")
+  stop("The API returned no article records for the selected years.")
 }
+
+message(sprintf(
+  "Total article records retrieved: %d",
+  length(raw_documents)
+))
+
 ```
 
 ## Transform the results
